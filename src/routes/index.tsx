@@ -114,6 +114,8 @@ function Dashboard() {
   const ocrFileRef = useRef<HTMLInputElement>(null);
 
   const mt = useMemo(() => MERGE_TYPES.find((m) => m.id === mergeType)!, [mergeType]);
+  // Merge types where the vehicle trip file can be uploaded instead of the Loading sheet.
+  const canUseTripGroups = mergeType === "gro" || mergeType === "fnv_gro_milk" || mergeType === "mum_watsapp_fnv";
 
   const groups = useMemo(() => {
     if (!mt.needsGroups) return [];
@@ -178,7 +180,6 @@ function Dashboard() {
   const canRun = () => {
     if (mt.needsBase && !baseWb) return "Upload 6620 Base file";
     if (mt.needsFg && !fgWb) return mergeType === "fnv_gro_cbe_trichy" ? "Upload 6620 Base file" : "Upload FNV/GRO merge file";
-    const canUseTripGroups = mergeType === "gro" || mergeType === "fnv_gro_milk";
     if (mt.needsLoading && !loadingWb && !(canUseTripGroups && tripGroupsWb)) {
       return "Upload loading sheet (or the vehicle trip file)";
     }
@@ -325,16 +326,20 @@ function Dashboard() {
               value={loadingWb}
               onChange={(v) => {
                 setLoadingWb(v);
-                if (v && (mergeType === "gro" || mergeType === "fnv_gro_milk")) setTripGroupsWb(null);
+                if (v && canUseTripGroups) setTripGroupsWb(null);
               }}
             />
           )}
-          {mt.needsLoading && (mergeType === "gro" || mergeType === "fnv_gro_milk") && (
+          {mt.needsLoading && canUseTripGroups && (
             <>
               <div className="text-xs text-muted-foreground">— or —</div>
               <FileInput
                 label="Vehicle trip file (alternative to Loading sheet)"
-                hint='TRIP NO. + Store Name columns (e.g. a route plan with Vehicle Type, Driver Name, Drop Point Number). Numeric trip numbers are merged here (GRO); a trip labelled "FNV" is excluded here and used by FNV + GRO Merge (Milk) instead — same split as the Loading sheet.'
+                hint={
+                  mergeType === "mum_watsapp_fnv"
+                    ? 'TRIP NO. + Store Name columns. Stores in trips whose TRIP NO. contains "FNV" are the exception — Milk-type SoIds are also counted for them alone (same rule as the Loading sheet, just read from this file instead).'
+                    : 'TRIP NO. + Store Name columns (e.g. a route plan with Vehicle Type, Driver Name, Drop Point Number). Stores sharing the same TRIP NO. are merged together directly — no FNV/numeric filtering needed.'
+                }
                 value={tripGroupsWb}
                 onChange={(v) => {
                   setTripGroupsWb(v);
@@ -344,16 +349,12 @@ function Dashboard() {
               {tripGroupsWb && (
                 <div className="text-xs text-muted-foreground">
                   {(() => {
-                    const parsed = parseTripGroupFile(tripGroupsWb.wb);
-                    const numeric = parsed.filter((l) => /^\d+$/.test(l.tripNo.trim()));
-                    const fnv = parsed.filter((l) => /fnv/i.test(l.tripNo));
-                    const gNumeric = new Map<string, number>();
-                    for (const { tripNo } of numeric) gNumeric.set(tripNo, (gNumeric.get(tripNo) ?? 0) + 1);
-                    const multi = [...gNumeric.values()].filter((n) => n > 1).length;
-                    const gFnv = new Set(fnv.map((l) => l.tripNo)).size;
-                    return mergeType === "gro"
-                      ? `${gNumeric.size} numeric trips parsed, ${multi} with multiple stores to merge. (${fnv.length} FNV-trip stores excluded — use FNV + GRO Merge (Milk) for those.)`
-                      : `${fnv.length} store(s) found under the "FNV" trip across ${gFnv} group(s). (${gNumeric.size} numeric trips ignored here — those belong to GRO Merge.)`;
+                    const g = new Map<string, number>();
+                    for (const { tripNo } of parseTripGroupFile(tripGroupsWb.wb)) {
+                      g.set(tripNo, (g.get(tripNo) ?? 0) + 1);
+                    }
+                    const multi = [...g.values()].filter((n) => n > 1).length;
+                    return `${g.size} trips parsed, ${multi} with multiple stores to merge.`;
                   })()}
                 </div>
               )}
@@ -385,7 +386,7 @@ function Dashboard() {
                 {mergeType === "fnv_gro_chennai" &&
                   " (Chennai: customer 1's FNV TRMID is the anchor. Customer 1's own GRO SoId is included, plus every other customer's GRO SoId — all mapped to customer 1's TRMID.)"}
                 {mergeType === "mum_watsapp_fnv" &&
-                  " (Mum Watsapp: uses the FNV/GRO merge file, Mumbai sheet. Only FNV and Bakery_and_Egg count (Milk is excluded) — except stores flagged as FNV trips in the Loading sheet, where Milk counts too. Whichever item has the MOST matching SoIds becomes the anchor — its TRMID is used, its own SoIds are skipped. You can also upload a Ground file below to auto-build groups from merged Store Name rows.)"}
+                  " (Mum Watsapp: uses the FNV/GRO merge file, Mumbai sheet. Only FNV and Bakery_and_Egg count (Milk is excluded) — except stores flagged as FNV trips (Trip No containing \"FNV\") in the Loading sheet, the vehicle trip file, or the Ground file, where Milk counts too. Whichever item has the MOST matching SoIds becomes the anchor — its TRMID is used, its own SoIds are skipped. You can also upload a Ground file below to auto-build groups from merged Store Name rows.)"}
                 {mergeType === "mum_egg_vehicle" &&
                   " (Egg Vehicle: uses the FNV/GRO merge file, Mumbai sheet. Only Bakery_and_Egg counts — FNV and Milk are ignored. Any one item's TRMID is the anchor; the rest contribute SoIds. Upload the Ground file below to auto-build groups from merged Vehicle-type rows.)"}
                 {" "}You can also paste a screenshot directly into the box below, or upload one, and it'll be read via OCR.
