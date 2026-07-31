@@ -379,13 +379,9 @@ export function runMerge(input: RunInput): OutRow[] {
       if (!fgRows.length) return [];
       let groups: string[][];
       if (input.tripGroupsWb) {
-        // Vehicle/route trip file can ALSO contain an "FNV" trip (a labelled
-        // exception row, not a real numbered vehicle trip) — same as the
-        // Loading sheet. Exclude it here too; it belongs to
-        // FNV + GRO Merge (Milk) instead.
-        const parsed = parseTripGroupFile(input.tripGroupsWb);
-        const numericOnly = parsed.filter((l) => /^\d+$/.test(String(l.tripNo).trim()));
-        groups = groupsFromLoading(numericOnly);
+        // Vehicle/route trip file: every trip here is a real delivery trip,
+        // so no FNV/numeric filtering needed — use its groups directly.
+        groups = groupsFromLoading(parseTripGroupFile(input.tripGroupsWb));
       } else {
         if (!input.loadingWb) return [];
         const loading = parseLoadingSheet(input.loadingWb);
@@ -403,15 +399,21 @@ export function runMerge(input: RunInput): OutRow[] {
     case "fnv_gro_milk": {
       if (!fgRows.length) return [];
       if (input.tripGroupsWb) {
-        // Only the "FNV"-labelled trip's stores get merged here (same
-        // differentiation as the Loading sheet: numeric trips → GRO,
-        // "FNV" trip → this merge). The first FNV-trip store's FNV TrmId
-        // is the anchor; every store in that trip (including the first)
-        // contributes its Milk SoIds.
-        const parsed = parseTripGroupFile(input.tripGroupsWb);
-        const fnvOnly = parsed.filter((l) => /fnv/i.test(String(l.tripNo)));
-        const groups = groupsFromLoading(fnvOnly);
+        // Same store-under-same-trip merge as "gro", but the anchor is
+        // whichever store in the trip actually has an FNV row (not simply
+        // the first row in the vehicle file — the FNV store can be listed
+        // in any position), and every store in the trip (including that
+        // anchor) contributes its Milk SoIds.
         const kc = pickCol(fgRows[0], "CustomerName") || "CustomerName";
+        const rawGroups = groupsFromLoading(parseTripGroupFile(input.tripGroupsWb));
+        const groups = rawGroups.map((group) => {
+          const fnvIdx = group.findIndex(
+            (store) => collectSoIds(fgRows, kc, store, (r) => typeIs(r, "FNV")).trmIds[0] != null,
+          );
+          if (fnvIdx <= 0) return group; // already first, or no FNV store found (group is skipped downstream)
+          // Move the actual FNV store to the front so it becomes the anchor.
+          return [group[fnvIdx], ...group.slice(0, fnvIdx), ...group.slice(fnvIdx + 1)];
+        });
         return processGroups(
           fgRows,
           kc,
@@ -519,11 +521,20 @@ export function runMerge(input: RunInput): OutRow[] {
       if (!fgRows.length || !input.groups) return [];
       const kc = keyOf(fgRows[0]);
       // Normally only FNV + Bakery_and_Egg count (Milk is excluded). Exception:
-      // stores that show up as FNV trips in the loading sheet — for those
-      // stores alone, Milk-type rows are also counted.
+      // stores that show up as FNV trips (Trip No containing "FNV") — read
+      // from whichever of these is uploaded: the Loading sheet, the vehicle
+      // trip file, or the Ground file (it often carries the same TRIP NO.
+      // column). For those stores alone, Milk-type rows are also counted.
       let exceptionStores = new Set<string>();
-      if (input.loadingWb) {
-        const loading = parseLoadingSheet(input.loadingWb);
+      const loadingSource = input.tripGroupsWb
+        ? parseTripGroupFile(input.tripGroupsWb)
+        : input.loadingWb
+          ? parseLoadingSheet(input.loadingWb)
+          : input.groundWb
+            ? parseTripGroupFile(input.groundWb)
+            : null;
+      if (loadingSource) {
+        const loading = loadingSource;
         exceptionStores = new Set(
           loading.filter((l) => /fnv/i.test(String(l.tripNo))).map((l) => norm(l.store)),
         );
