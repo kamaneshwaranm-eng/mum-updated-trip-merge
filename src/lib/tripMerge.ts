@@ -379,9 +379,13 @@ export function runMerge(input: RunInput): OutRow[] {
       if (!fgRows.length) return [];
       let groups: string[][];
       if (input.tripGroupsWb) {
-        // Vehicle/route trip file: every trip here is a real delivery trip,
-        // so no FNV/numeric filtering needed — use its groups directly.
-        groups = groupsFromLoading(parseTripGroupFile(input.tripGroupsWb));
+        // Vehicle/route trip file: same file can carry an "FNV" trip block
+        // (Trip No literally = "FNV") alongside real numeric trips — those
+        // FNV rows must NOT be treated as GRO trips, so exclude them here,
+        // same as the numeric-only filtering done for the Loading sheet below.
+        const parsed = parseTripGroupFile(input.tripGroupsWb);
+        const numericOnly = parsed.filter((l) => !/fnv/i.test(String(l.tripNo)));
+        groups = groupsFromLoading(numericOnly);
       } else {
         if (!input.loadingWb) return [];
         const loading = parseLoadingSheet(input.loadingWb);
@@ -405,7 +409,11 @@ export function runMerge(input: RunInput): OutRow[] {
         // in any position), and every store in the trip (including that
         // anchor) contributes its Milk SoIds.
         const kc = pickCol(fgRows[0], "CustomerName") || "CustomerName";
-        const rawGroups = groupsFromLoading(parseTripGroupFile(input.tripGroupsWb));
+        // Only the "FNV" trip block is relevant here — numeric (plain GRO)
+        // trips in this same file should be ignored for the Milk merge.
+        const parsed = parseTripGroupFile(input.tripGroupsWb);
+        const fnvOnly = parsed.filter((l) => /fnv/i.test(String(l.tripNo)));
+        const rawGroups = groupsFromLoading(fnvOnly);
         const groups = rawGroups.map((group) => {
           const fnvIdx = group.findIndex(
             (store) => collectSoIds(fgRows, kc, store, (r) => typeIs(r, "FNV")).trmIds[0] != null,
