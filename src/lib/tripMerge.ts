@@ -402,45 +402,28 @@ export function runMerge(input: RunInput): OutRow[] {
     }
     case "fnv_gro_milk": {
       if (!fgRows.length) return [];
+      const custKey = pickCol(fgRows[0], "CustomerName") || "CustomerName";
+      let relevantStores: Set<string>;
       if (input.tripGroupsWb) {
-        // Same store-under-same-trip merge as "gro", but the anchor is
-        // whichever store in the trip actually has an FNV row (not simply
-        // the first row in the vehicle file — the FNV store can be listed
-        // in any position), and every store in the trip (including that
-        // anchor) contributes its Milk SoIds.
-        const kc = pickCol(fgRows[0], "CustomerName") || "CustomerName";
-        // Only the "FNV" trip block is relevant here — numeric (plain GRO)
-        // trips in this same file should be ignored for the Milk merge.
+        // Vehicle/route trip file: stores listed under the "FNV" trip block
+        // are the eligible stores here (numeric/plain GRO trips in the same
+        // file are ignored for this merge). Each such store merges its own
+        // Milk SoIds with its OWN FNV TrmId — not with another store's.
         const parsed = parseTripGroupFile(input.tripGroupsWb);
-        const fnvOnly = parsed.filter((l) => /fnv/i.test(String(l.tripNo)));
-        const rawGroups = groupsFromLoading(fnvOnly);
-        const groups = rawGroups.map((group) => {
-          const fnvIdx = group.findIndex(
-            (store) => collectSoIds(fgRows, kc, store, (r) => typeIs(r, "FNV")).trmIds[0] != null,
-          );
-          if (fnvIdx <= 0) return group; // already first, or no FNV store found (group is skipped downstream)
-          // Move the actual FNV store to the front so it becomes the anchor.
-          return [group[fnvIdx], ...group.slice(0, fnvIdx), ...group.slice(fnvIdx + 1)];
-        });
-        return processGroups(
-          fgRows,
-          kc,
-          groups,
-          (r) => typeIs(r, "FNV"),
-          (r) => typeIs(r, "Milk"),
-          true, // includeAnchorSoId: the anchor store's own Milk SoIds count too
+        relevantStores = new Set(
+          parsed.filter((l) => /fnv/i.test(String(l.tripNo))).map((l) => norm(l.store)),
+        );
+      } else {
+        if (!input.loadingWb) return [];
+        const loading = parseLoadingSheet(input.loadingWb);
+        // Only trips whose Trip No contains "FNV"
+        const fnvTrips = new Set(
+          loading.filter((l) => /fnv/i.test(String(l.tripNo))).map((l) => l.tripNo),
+        );
+        relevantStores = new Set(
+          loading.filter((l) => fnvTrips.has(l.tripNo)).map((l) => norm(l.store)),
         );
       }
-      if (!input.loadingWb) return [];
-      const loading = parseLoadingSheet(input.loadingWb);
-      const custKey = pickCol(fgRows[0], "CustomerName") || "CustomerName";
-      // Only trips whose Trip No contains "FNV"
-      const fnvTrips = new Set(
-        loading.filter((l) => /fnv/i.test(String(l.tripNo))).map((l) => l.tripNo),
-      );
-      const relevantStores = new Set(
-        loading.filter((l) => fnvTrips.has(l.tripNo)).map((l) => norm(l.store)),
-      );
       const out: OutRow[] = [];
       for (const store of relevantStores) {
         const rowsForStore = fgRows.filter((r) => norm(r[custKey]) === store);
